@@ -6,6 +6,7 @@ declare(strict_types=1);
  *
  * @license  https://github.com/dtm-php/dtm-client/blob/master/LICENSE
  */
+
 namespace DtmClient;
 
 use DtmClient\Api\ApiInterface;
@@ -41,15 +42,17 @@ class XA extends AbstractTransaction
     /**
      * Start a xa local transaction.
      */
-    public function localTransaction(callable $callback): void
+    public function localTransaction(callable $callback): mixed
     {
+//        var_dump(__METHOD__);
+
         if (TransContext::getOp() == Branch::BranchCommit || TransContext::getOp() == Branch::BranchRollback) {
             $this->dtmImp->xaHandlePhase2(TransContext::getGid(), TransContext::getBranchId(), TransContext::getOp());
-            return;
+            return null;
         }
 
-        $this->dtmImp->xaHandleLocalTrans(function () use ($callback) {
-            $callback($this->dbTransaction);
+        return $this->dtmImp->xaHandleLocalTrans(function () use ($callback) {
+            $result = $callback($this->dbTransaction);
             switch ($this->api->getProtocol()) {
                 case Protocol::GRPC:
                     $body = [
@@ -62,6 +65,7 @@ class XA extends AbstractTransaction
                 case Protocol::HTTP:
                 case Protocol::JSONRPC_HTTP:
                     $body = [
+                        'data' => TransContext::getCustomData(),
                         'url' => TransContext::getPhase2URL(),
                         'branch_id' => TransContext::getBranchId(),
                         'gid' => TransContext::getGid(),
@@ -71,13 +75,19 @@ class XA extends AbstractTransaction
                 default:
                     throw new UnsupportedException('Unsupported protocol');
             }
-            return $this->api->registerBranch($body);
+            $this->api->registerBranch($body);
+
+            return $result;
         });
     }
 
     public function callBranch(string $url, array|Message $body, ?array $rpcReply = null)
     {
+//        var_dump(__METHOD__);
+
         $subBranch = $this->branchIdGenerator->generateSubBranchId();
+//        var_dump($subBranch);
+
         switch ($this->api->getProtocol()) {
             case Protocol::HTTP:
             case Protocol::JSONRPC_HTTP:
@@ -90,8 +100,9 @@ class XA extends AbstractTransaction
                 $requestBranch->branchId = $subBranch;
                 $requestBranch->branchHeaders = TransContext::getBranchHeaders();
                 return $this->api->transRequestBranch($requestBranch);
+
             case Protocol::GRPC:
-                if (! $body instanceof Message) {
+                if (!$body instanceof Message) {
                     throw new InvalidArgumentException('$body must be instance of Message');
                 }
                 $branchRequest = new RequestBranch();
@@ -99,7 +110,7 @@ class XA extends AbstractTransaction
                 $branchRequest->url = $url;
                 $branchRequest->phase2Url = $url;
                 $branchRequest->op = Operation::ACTION;
-                ! empty($rpcReply) && $branchRequest->grpcDeserialize = $rpcReply;
+                !empty($rpcReply) && $branchRequest->grpcDeserialize = $rpcReply;
                 $branchRequest->grpcMetadata = [
                     'dtm-gid' => TransContext::getGid(),
                     'dtm-trans_type' => TransType::XA,
@@ -118,25 +129,36 @@ class XA extends AbstractTransaction
     /**
      * Start a xa global transaction.
      */
-    public function globalTransaction(string $gid, callable $callback)
+    public function globalTransaction(callable $callback, ?string $gid = null): mixed
     {
         $this->init($gid);
         $this->api->prepare(TransContext::toArray());
+        $result = null;
         try {
-            $callback();
-            $this->api->submit(TransContext::toArray());
+            $result = $callback();
+
+            if($gid === null){
+                $this->api->submit(TransContext::toArray());
+            }
         } catch (\Throwable $throwable) {
             $this->api->abort(TransContext::toArray());
             throw $throwable;
         }
+
+        return $result;
     }
 
     protected function init(?string $gid = null)
     {
+        $branchId = '';
         if ($gid === null) {
             $gid = $this->generateGid();
+        } else {
+            $branchId = TransContext::getBranchId();
         }
-        TransContext::init($gid, TransType::XA, '');
+
+        TransContext::init($gid, TransType::XA, $branchId);
         TransContext::setOp(Operation::ACTION);
+
     }
 }

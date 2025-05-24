@@ -32,6 +32,7 @@ class BranchIdGenerator implements BranchIdGeneratorInterface
 
     public function getCurrentSubBranchId(int $subBranchId): string
     {
+        var_dump(__METHOD__, TransContext::getBranchId(),$subBranchId);
         return TransContext::getBranchId() . sprintf('%02d', $subBranchId);
     }
 }
